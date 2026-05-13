@@ -44,8 +44,8 @@ PROCESSED_FILENAME = "banking_complaints.csv"
 # Used by the supervised fine-tuning approach in notebook 02.
 RESOLUTION_LABEL_MAP: dict[str, str | None] = {
     "Closed with monetary relief":     "positive",  # company refunded / compensated
-    "Closed with non-monetary relief": "neutral",   # company fixed issue, no financial comp
-    "Closed with explanation":         "negative",  # company explained only — no action
+    "Closed with non-monetary relief": "positive",  # company fixed issue — counts as resolution
+    "Closed with explanation":         "neutral",   # company explained only — no action taken
     "Untimely response":               "negative",  # company failed to respond on time
     "Closed without relief":           "negative",  # explicit denial
     "Closed":                          "negative",  # generic close — no stated action
