@@ -44,7 +44,9 @@ ZEROSHOT_MODEL_ID = "cross-encoder/nli-deberta-v3-small"
 
 # Fine-tuned DistilBERT trained on CFPB resolution labels (notebook 02, §7)
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-FINETUNED_MODEL_PATH = _PROJECT_ROOT / "models" / "distilbert_cx"
+FINETUNED_MODEL_PATH    = _PROJECT_ROOT / "models" / "distilbert_cx"
+# Second-stage fine-tuning on GT labels (notebook 02, §12)
+FINETUNED_MODEL_V2_PATH = _PROJECT_ROOT / "models" / "distilbert_cx_v2"
 
 FINBERT_BATCH_SIZE = 32
 ROBERTA_BATCH_SIZE = 32
@@ -76,7 +78,7 @@ class SentimentPipeline:
         method: One of 'vader', 'finbert', 'roberta', 'zeroshot'.
     """
 
-    VALID_METHODS = ("vader", "finbert", "roberta", "zeroshot", "finetuned")
+    VALID_METHODS = ("vader", "finbert", "roberta", "zeroshot", "finetuned", "finetuned_v2")
 
     def __init__(self, method: str = "finbert") -> None:
         if method not in self.VALID_METHODS:
@@ -126,6 +128,20 @@ class SentimentPipeline:
             self._model = hf_pipeline(
                 "text-classification",
                 model=str(FINETUNED_MODEL_PATH),
+                truncation=True,
+                max_length=256,
+            )
+
+        elif method == "finetuned_v2":
+            if not FINETUNED_MODEL_V2_PATH.exists():
+                raise FileNotFoundError(
+                    f"Fine-tuned v2 model not found at '{FINETUNED_MODEL_V2_PATH}'. "
+                    "Run notebook 02 Section 12 to train and save the model first."
+                )
+            from transformers import pipeline as hf_pipeline
+            self._model = hf_pipeline(
+                "text-classification",
+                model=str(FINETUNED_MODEL_V2_PATH),
                 truncation=True,
                 max_length=256,
             )
@@ -208,7 +224,7 @@ class SentimentPipeline:
         """Batch inference for FinBERT, RoBERTa, and fine-tuned DistilBERT."""
         if self.method == "roberta":
             batch_size = ROBERTA_BATCH_SIZE
-        elif self.method == "finetuned":
+        elif self.method in ("finetuned", "finetuned_v2"):
             batch_size = FINETUNED_BATCH_SIZE
         else:
             batch_size = FINBERT_BATCH_SIZE
