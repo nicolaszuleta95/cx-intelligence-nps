@@ -11,7 +11,7 @@
 **End-to-end ML system for banking customer experience analytics —
 complaint severity prediction, NPS analysis, topic mining, and customer segmentation.**
 
-[Live Demo](#) · [Notebooks](notebooks/) · [Model Card](reports/model_card.md)
+[Live Demo](https://nicolaszuleta95-cx-intelligence-nps.streamlit.app) · [Notebooks](notebooks/) · [Model Card](reports/model_card.md)
 
 </div>
 
