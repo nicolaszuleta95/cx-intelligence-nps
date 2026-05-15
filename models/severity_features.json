@@ -1,0 +1,10 @@
+[
+  "timely_response_binary",
+  "response_type_encoded",
+  "product_encoded",
+  "complaint_length",
+  "has_narrative",
+  "submission_channel_encoded",
+  "days_to_resolution",
+  "multi_complaint_flag"
+]
