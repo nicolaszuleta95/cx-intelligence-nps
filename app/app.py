@@ -1,11 +1,11 @@
 """
-CX Intelligence — NPS & Sentiment Analysis · Streamlit Dashboard
+CX Intelligence — NPS & Complaint Severity Analysis · Streamlit Dashboard
 
 Four interactive sections:
-  1. NPS Dashboard   — overall NPS gauge, segment breakdown, NPS by product/time
-  2. Sentiment Analyzer — real-time VADER + FinBERT comparison on typed text
-  3. Topic Explorer   — LDA topic keywords, NPS by topic, representative complaints
-  4. Customer Segments — K-Means cluster profiles, PCA scatter, CX recommendations
+  1. NPS Dashboard         — overall NPS gauge, segment breakdown, NPS by product/time
+  2. Severity Analyzer     — real-time complaint severity prediction (XGBoost)
+  3. Topic Explorer        — LDA topic keywords, NPS by topic, representative complaints
+  4. Customer Segments     — K-Means cluster profiles, PCA scatter, CX recommendations
 
 Run:
     streamlit run app/app.py
@@ -33,13 +33,15 @@ PROCESSED_PATH = ROOT / "data" / "processed" / "banking_complaints.csv"
 FEATURES_PATH = ROOT / "data" / "processed" / "features_nlp.csv"
 LDA_MODEL_PATH = ROOT / "models" / "lda_model.pkl"
 KMEANS_MODEL_PATH = ROOT / "models" / "kmeans_model.joblib"
+SEVERITY_MODEL_PATH = ROOT / "models" / "severity_model.joblib"
+SEVERITY_FEATURES_PATH = ROOT / "models" / "severity_features.json"
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="CX Intelligence — NPS & Sentiment",
+    page_title="CX Intelligence — NPS & Severity",
     page_icon="💬",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -61,22 +63,22 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     return processed, features
 
 
-@st.cache_resource(show_spinner="Loading FinBERT model (first run ~30 s)…")
-def load_finbert():
-    """Load FinBERT pipeline — cached across Streamlit reruns."""
+@st.cache_resource(show_spinner="Loading severity model…")
+def load_severity_model():
+    """Load SeverityPredictor — cached across Streamlit reruns."""
+    import json
     import sys
     sys.path.insert(0, str(ROOT))
-    from src.sentiment import SentimentPipeline
-    return SentimentPipeline(method="finbert")
-
-
-@st.cache_resource(show_spinner=False)
-def load_vader():
-    """Load VADER pipeline — cached across Streamlit reruns."""
-    import sys
-    sys.path.insert(0, str(ROOT))
-    from src.sentiment import SentimentPipeline
-    return SentimentPipeline(method="vader")
+    from src.severity import SeverityPredictor, FEATURE_COLS
+    if not SEVERITY_MODEL_PATH.exists():
+        return None, FEATURE_COLS
+    predictor = SeverityPredictor(model_type="xgboost")
+    predictor.load(SEVERITY_MODEL_PATH)
+    feature_names = FEATURE_COLS
+    if SEVERITY_FEATURES_PATH.exists():
+        with open(SEVERITY_FEATURES_PATH) as f:
+            feature_names = json.load(f)
+    return predictor, feature_names
 
 
 @st.cache_resource(show_spinner=False)
@@ -102,31 +104,37 @@ def load_kmeans():
 
 
 # ---------------------------------------------------------------------------
-# Helper: sentiment color mapping
+# Helper: severity color mapping
 # ---------------------------------------------------------------------------
 
-SENTIMENT_COLORS = {
-    "positive": "#22c55e",
-    "neutral": "#f59e0b",
-    "negative": "#ef4444",
+SEVERITY_COLORS = {
+    "HIGH": "#ef4444",
+    "MEDIUM": "#f59e0b",
+    "LOW": "#22c55e",
+}
+
+SEVERITY_ACTIONS = {
+    "HIGH": "Escalate immediately — assign dedicated case manager",
+    "MEDIUM": "Follow up within 24h — standard resolution process",
+    "LOW": "Queue for batch resolution — monitor NPS impact",
 }
 
 
-def sentiment_badge(label: str, score: float) -> str:
-    color = SENTIMENT_COLORS.get(label.lower(), "#6b7280")
-    return f'<span style="background:{color};color:white;padding:4px 10px;border-radius:6px;font-weight:bold;">{label.upper()} ({score:.2f})</span>'
+def severity_badge(label: str) -> str:
+    color = SEVERITY_COLORS.get(label.upper(), "#6b7280")
+    return f'<span style="background:{color};color:white;padding:6px 14px;border-radius:6px;font-weight:bold;font-size:1.1em;">{label.upper()}</span>'
 
 
 # ---------------------------------------------------------------------------
 # Sidebar navigation
 # ---------------------------------------------------------------------------
 
-st.sidebar.image("https://img.shields.io/badge/CX_Intelligence-NPS_%26_Sentiment-1e40af?style=for-the-badge", use_column_width=True)
+st.sidebar.image("https://img.shields.io/badge/CX_Intelligence-NPS_%26_Severity-1e40af?style=for-the-badge", use_column_width=True)
 st.sidebar.markdown("## Navigation")
 
 page = st.sidebar.radio(
     "Go to",
-    ["NPS Dashboard", "Sentiment Analyzer", "Topic Explorer", "Customer Segments"],
+    ["NPS Dashboard", "Severity Analyzer", "Topic Explorer", "Customer Segments"],
     label_visibility="collapsed",
 )
 
@@ -270,73 +278,111 @@ if page == "NPS Dashboard":
         st.plotly_chart(fig_ch, use_container_width=True)
 
 # ============================================================
-# PAGE 2 — SENTIMENT ANALYZER
+# PAGE 2 — SEVERITY ANALYZER
 # ============================================================
 
-elif page == "Sentiment Analyzer":
-    st.title("Sentiment Analyzer")
-    st.caption("Type any banking complaint to get real-time VADER and FinBERT predictions")
+elif page == "Severity Analyzer":
+    st.title("Complaint Severity Analyzer")
+    st.caption("Predict complaint severity in real time using structured features — XGBoost model")
 
     st.info(
-        "**VADER** is a rule-based baseline. **FinBERT** is a transformer pre-trained on financial text. "
-        "First run downloads FinBERT (~500 MB) — subsequent runs use the cached model."
+        "Enter complaint details below. The model predicts severity (LOW / MEDIUM / HIGH) "
+        "from structured CFPB variables — no NLP processing required. "
+        "Sentiment classification was discarded after testing 6 models (~33–41% accuracy = near random)."
     )
 
-    text_input = st.text_area(
-        "Enter customer comment:",
-        placeholder="e.g. The bank charged me an unexpected fee without any notification...",
-        height=120,
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from src.severity import (
+        FEATURE_COLS,
+        PRODUCT_SEVERITY_WEIGHT,
+        RESPONSE_FAVORABILITY,
+        build_severity_features,
     )
 
-    if st.button("Analyze", type="primary"):
-        if not text_input.strip():
-            st.warning("Please enter a comment before analyzing.")
+    BANKING_PRODUCTS = list(PRODUCT_SEVERITY_WEIGHT.keys())
+    RESPONSE_TYPES = list(RESPONSE_FAVORABILITY.keys())
+
+    col_left, col_right = st.columns([2, 1])
+
+    with col_left:
+        complaint_text = st.text_area(
+            "Complaint narrative (optional — used for word count feature):",
+            placeholder="e.g. I have been charged an overdraft fee every month for the past year despite maintaining the minimum balance. I called three times and each time I was told it would be resolved, but nothing changed...",
+            height=150,
+        )
+
+    with col_right:
+        product = st.selectbox("Banking product:", BANKING_PRODUCTS)
+        timely_response = st.radio("Was the response timely?", ["Yes", "No"], horizontal=True)
+        response_type = st.selectbox("Company resolution type:", RESPONSE_TYPES)
+
+    if st.button("Analyze Severity", type="primary"):
+        # Build a single-row DataFrame from user inputs
+        complaint_length = len(complaint_text.split()) if complaint_text.strip() else 0
+        has_narrative = 1 if complaint_length > 0 else 0
+        timely_binary = 1 if timely_response == "Yes" else 0
+        response_encoded = RESPONSE_FAVORABILITY.get(response_type, 0)
+        product_encoded = PRODUCT_SEVERITY_WEIGHT.get(product, 1)
+
+        input_df = pd.DataFrame([{
+            "timely_response_binary": timely_binary,
+            "response_type_encoded": response_encoded,
+            "product_encoded": product_encoded,
+            "complaint_length": complaint_length,
+            "has_narrative": has_narrative,
+            "submission_channel_encoded": 3,  # Web (most common for detailed complaints)
+            "days_to_resolution": 2.0,        # Neutral default
+            "multi_complaint_flag": 0,
+        }])
+
+        predictor, feature_names = load_severity_model()
+
+        if predictor is None:
+            st.warning(
+                "Severity model not found. Run Notebook 02 first to train and save the model."
+            )
         else:
-            with st.spinner("Analyzing with VADER…"):
-                vader_pipe = load_vader()
-                vader_result = vader_pipe.analyze(text_input)
-
-            with st.spinner("Analyzing with FinBERT…"):
-                finbert_pipe = load_finbert()
-                finbert_result = finbert_pipe.analyze(text_input)
+            pred_label = predictor.predict_labels(input_df[feature_names])[0]
+            pred_proba = predictor.predict_proba(input_df[feature_names])[0]
 
             st.markdown("---")
-            col_v, col_f = st.columns(2)
 
-            with col_v:
-                st.subheader("VADER (Baseline)")
-                st.markdown(
-                    sentiment_badge(vader_result["label"], vader_result["score"]),
-                    unsafe_allow_html=True,
-                )
-                st.caption(f"Compound score: {vader_result['score']}")
-                st.progress(
-                    (vader_result["score"] + 1) / 2,
-                    text=f"Sentiment intensity: {vader_result['score']:.3f}",
-                )
+            # Severity badge
+            col_sev, col_action = st.columns([1, 2])
+            with col_sev:
+                st.subheader("Severity Level")
+                st.markdown(severity_badge(pred_label), unsafe_allow_html=True)
 
-            with col_f:
-                st.subheader("FinBERT (Production)")
+            with col_action:
+                st.subheader("CX Action Required")
+                action = SEVERITY_ACTIONS[pred_label]
+                action_color = SEVERITY_COLORS[pred_label]
                 st.markdown(
-                    sentiment_badge(finbert_result["label"], finbert_result["score"]),
+                    f'<div style="background:{action_color}22;border-left:4px solid {action_color};'
+                    f'padding:12px 16px;border-radius:4px;font-size:1.0em;">{action}</div>',
                     unsafe_allow_html=True,
-                )
-                st.caption(f"Confidence: {finbert_result['score']:.4f}")
-                st.progress(
-                    finbert_result["score"],
-                    text=f"Model confidence: {finbert_result['score']:.1%}",
                 )
 
             st.markdown("---")
-            agree = vader_result["label"] == finbert_result["label"]
-            if agree:
-                st.success(f"Both models agree: **{finbert_result['label'].upper()}**")
-            else:
-                st.warning(
-                    f"Models disagree — VADER: **{vader_result['label']}** · "
-                    f"FinBERT: **{finbert_result['label']}**. "
-                    "FinBERT is the production model and generally performs better on formal banking text."
-                )
+
+            # Class probabilities
+            st.subheader("Probability by Severity Level")
+            prob_cols = st.columns(3)
+            for col, (label, prob) in zip(prob_cols, zip(["LOW", "MEDIUM", "HIGH"], pred_proba)):
+                with col:
+                    color = SEVERITY_COLORS[label]
+                    st.markdown(f"**{label}**")
+                    st.progress(float(prob), text=f"{prob:.1%}")
+
+            st.markdown("---")
+
+            # Top 3 feature contributions
+            st.subheader("Top 3 Drivers of This Prediction")
+            fi_df = predictor.get_feature_importance().head(3)
+            for _, row in fi_df.iterrows():
+                val = input_df[row["feature_name"]].values[0]
+                st.markdown(f"- **{row['feature_name']}** = `{val}` — {row['importance_pct']:.1f}% model weight")
 
 # ============================================================
 # PAGE 3 — TOPIC EXPLORER
@@ -409,16 +455,19 @@ elif page == "Topic Explorer":
 
     # --- Summary table ---
     st.subheader("Topic Summary")
-    if "nps_score" in df_features.columns and "finbert_label" in df_features.columns:
+    if "nps_score" in df_features.columns:
         summary_rows = []
         for topic, gdf in df_features.groupby(topic_col):
-            summary_rows.append({
+            row_data = {
                 "Topic": topic,
                 "% of Complaints": f"{len(gdf) / len(df_features) * 100:.1f}%",
                 "Avg NPS": round(gdf["nps_score"].mean(), 1),
-                "Dominant Sentiment": gdf["finbert_label"].mode().iloc[0] if len(gdf) > 0 else "—",
                 "N Complaints": len(gdf),
-            })
+            }
+            if "severity_label" in gdf.columns:
+                pct_high = (gdf["severity_label"] == "HIGH").sum() / len(gdf) * 100
+                row_data["% HIGH Severity"] = f"{pct_high:.1f}%"
+            summary_rows.append(row_data)
         st.dataframe(
             pd.DataFrame(summary_rows).sort_values("Avg NPS"),
             use_container_width=True,
@@ -472,9 +521,11 @@ elif page == "Customer Segments":
         st.subheader(f"Profile — {selected_segment}")
         if "nps_score" in seg_df.columns:
             st.metric("Avg NPS Score", f"{seg_df['nps_score'].mean():.1f}")
-        if "finbert_label" in seg_df.columns:
-            dominant = seg_df["finbert_label"].mode().iloc[0] if len(seg_df) > 0 else "—"
-            st.metric("Dominant Sentiment", dominant.capitalize())
+        if "severity_label" in seg_df.columns:
+            dominant = seg_df["severity_label"].mode().iloc[0] if len(seg_df) > 0 else "—"
+            pct_high = (seg_df["severity_label"] == "HIGH").sum() / len(seg_df) * 100
+            st.metric("Dominant Severity", dominant)
+            st.metric("% HIGH Severity", f"{pct_high:.1f}%")
         if "product" in seg_df.columns:
             top_product = seg_df["product"].mode().iloc[0] if len(seg_df) > 0 else "—"
             st.metric("Top Product", top_product)
@@ -522,11 +573,14 @@ elif page == "Customer Segments":
     sys.path.insert(0, str(ROOT))
     from src.segmentation import build_cluster_profiles
 
-    if "nps_segment" in df_features.columns and "finbert_label" in df_features.columns:
+    if "nps_segment" in df_features.columns:
         profiles = build_cluster_profiles(df_features)
         profiles["segment_name"] = profiles["cluster"].map(cx_names).fillna(profiles["cluster"].astype(str))
+        display_cols = [c for c in ["segment_name", "n_complaints", "avg_nps", "dominant_severity",
+                                     "avg_severity_proba_high", "top_product", "pct_detractors",
+                                     "pct_high_severity"] if c in profiles.columns]
         st.dataframe(
-            profiles[["segment_name", "n_complaints", "avg_nps", "dominant_sentiment", "top_product", "pct_detractors"]],
+            profiles[display_cols],
             use_container_width=True,
             hide_index=True,
         )
