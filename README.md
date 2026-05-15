@@ -27,134 +27,145 @@ Reading complaints manually is impossible at scale. A team analyzing 10,000 mont
 
 1. Calculates and tracks NPS by product, channel, and time period
 2. **Predicts complaint severity (LOW / MEDIUM / HIGH) to prioritize CX action**
-3. Discovers the recurring themes driving dissatisfaction
-4. Segments customers by their satisfaction and severity profile
-5. Delivers all insights through an interactive dashboard
-
----
-
-## NPS Primer
-
-**Net Promoter Score** is the standard CX metric in banking and financial services.
-
-```
-NPS = % Promoters − % Detractors
-
-Promoters  (score 9–10): Loyal customers likely to recommend
-Passives   (score 7–8):  Satisfied but not enthusiastic
-Detractors (score 0–6):  Unhappy customers at risk of churn
-```
-
-NPS alone is a number. This system explains *what's behind it* — which products, topics, and customer segments are driving the score up or down, and **how urgently each complaint needs CX attention**.
+3. Discovers the recurring themes driving dissatisfaction (LDA topic modeling)
+4. Segments customers by their satisfaction and severity profile (K-Means)
+5. Delivers all insights through an interactive Streamlit dashboard
 
 ---
 
 ## Why we moved away from sentiment classification
 
-Sentiment classification (positive/negative/neutral) was initially planned for this project.
-After testing **6 models** — including FinBERT, RoBERTa, VADER, Zero-Shot DeBERTa, and two
-DistilBERT fine-tuning stages — all performed near random chance (**~33–41% accuracy**).
+Sentiment classification (positive/negative/neutral) was initially planned. After testing **6 models** — VADER, FinBERT, RoBERTa, Zero-Shot DeBERTa, and two DistilBERT fine-tuning stages — all performed near random chance (**33–41% accuracy**).
 
-**Root cause:** The CFPB dataset is 100% complaints by definition, making the
-positive/negative distinction semantically meaningless in this corpus.
+**Root cause:** The CFPB dataset is 100% complaints by definition. Every record describes a problem — there is no positive/negative variation to learn, only urgency variation. The target was semantically invalid.
 
-Rather than forcing an ill-defined problem, we redefined the target: **complaint severity
-(LOW / MEDIUM / HIGH)** — a variable that exists naturally in the structured CFPB data and
-directly maps to CX action priorities. This is what a CX team actually needs: not whether
-a complaint is 'negative', but **how urgently it needs attention**.
+Rather than forcing an ill-defined problem, we redefined the target: **complaint severity (LOW / MEDIUM / HIGH)** — a variable that exists naturally in the CFPB structured metadata and directly maps to CX operational priorities.
 
-> *"El approach de sentiment classification fue descartado después de validación empírica con
-> 6 modelos distintos. El diagnóstico: clasificar positivo/negativo en un corpus de quejas
-> carece de sentido semántico. Redefinimos el problema como predicción de severidad —
-> una variable con valor real para equipos de CX — y obtuvimos resultados medibles y
-> accionables con variables estructuradas del mismo dataset."*
-
-This demonstrates **senior critical thinking** — knowing when to reframe the problem, not just
-run more models.
+> This demonstrates **senior critical thinking** — knowing when to reframe the problem, not just run more models.
 
 ---
 
 ## Results
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| **Severity Accuracy — XGBoost** | *(run notebook 02)* | Production model — structured CFPB features |
-| **Severity F1-weighted — XGBoost** | *(run notebook 02)* | 5-fold CV + Optuna tuning |
-| **Severity Accuracy — Logistic Regression** | *(run notebook 02)* | Interpretable baseline |
-| **NPS (complaint dataset)** | **−6.33** | Simulated proxy; negative NPS expected for complaint data |
-| **Records analysed** | **~40,000–60,000** | Banking products, CFPB dataset |
-| **Topics discovered** | *(run notebook 03)* | Named with banking domain expertise |
-| **Customer segments** | *(run notebook 04)* | K-Means on severity + NLP features |
+| Metric | Value |
+|--------|-------|
+| **Severity model — XGBoost accuracy** | **74.7%** |
+| **Severity model — F1-weighted** | **0.726** |
+| **Baseline — Logistic Regression F1** | 0.713 |
+| **Model lift over random triage** | **4.4×** |
+| **HIGH severity recall (top-20% review)** | **87%** |
+| **Estimated cost saving (test set)** | **$24,500** |
+| **Overall NPS (complaint dataset)** | **−5.59** (expected — 100% complaints) |
+| **Records analysed** | **35,226** banking complaints with narrative |
+| **Topics discovered** | **4** (LDA, k optimised by perplexity) |
+| **Customer segments** | **7** (K-Means, k optimised by silhouette) |
 
-> **Key finding:** Complaint severity from structured variables (response timeliness, resolution
-> type, product, complaint length) outperforms 6 NLP sentiment models on this corpus.
-> The signal is in the metadata, not the text. Correct problem definition matters more than
-> model complexity.
-
-### Top 5 Drivers of Severity
-
-*(Updated after running notebook 02)*
-1. **Timely response** — The #1 predictor: SLA misses immediately elevate severity
-2. **Resolution quality** — Monetary relief resolves; explanation-only escalates
-3. **Complaint length** — Longer complaints signal deeper, unresolved frustration
-4. **Product type** — Mortgage and student loans generate structurally higher severity
-5. **Days to resolution** — Resolution time beyond 2 weeks is a strong HIGH severity signal
+> **Key finding:** The #1 severity predictor is `response_type_encoded` (73.4% importance) — *how* the bank resolved the complaint matters more than any other variable. `timely_response` is #2 (21.3%). Complaint text contributes only 2.2% via word count. Correct problem framing outperforms NLP complexity.
 
 ---
 
-## System Architecture
+## Model Performance Detail
 
-| Layer | Tool | Role |
-|-------|------|------|
-| **Preprocessing** | spaCy | Tokenization, lemmatization |
-| **NPS Analysis** | Custom logic | Simulate and calculate NPS from resolution data |
-| **Severity Prediction** | XGBoost | Predict complaint severity from structured features |
-| **Topic Mining** | LDA | Discover recurring complaint themes |
-| **Segmentation** | K-Means | Cluster customers by severity + NPS + topic profile |
+### Severity Predictor (XGBoost, Optuna-tuned)
 
-### Why structured features over NLP for severity
+| Model | Accuracy | F1-weighted | Notes |
+|-------|----------|-------------|-------|
+| Logistic Regression | 73.0% | 0.713 | Interpretable baseline |
+| **XGBoost (tuned)** | **74.7%** | **0.726** | Production · +1.3 pp F1 |
 
-VADER, FinBERT, RoBERTa, and Zero-Shot DeBERTa all failed near random chance (~33%)
-because they classify *text emotional tone*, while the target is *complaint urgency* —
-a fundamentally different annotation axis.
+5-fold CV: accuracy **74.1% ± 0.4%**
 
-The CFPB dataset already contains `company_response_to_consumer`, `timely_response`,
-and resolution dates for every record. These structured variables carry more signal
-about complaint urgency than the complaint text itself — and they require no GPU,
-no model downloads, and no domain fine-tuning.
+### Feature Importance
+
+| Rank | Feature | Importance |
+|------|---------|-----------|
+| 1 | `response_type_encoded` | **73.4%** |
+| 2 | `timely_response_binary` | 21.3% |
+| 3 | `complaint_length` | 2.2% |
+| 4 | `product_encoded` | 2.2% |
+| 5 | `days_to_resolution` | 0.8% |
+
+### Business Impact (conservative assumptions)
+
+| Triage method | HIGH detected | Rate | Est. churn cost |
+|---------------|--------------|------|-----------------|
+| Random 20% review | 41 / 208 | 20% | $29,225 |
+| **Model top-20% by P(HIGH)** | **181 / 208** | **87%** | **$4,725** |
+| **Lift / Saving** | | **4.4×** | **$24,500** |
+
+*Assumptions: $500 per lost customer · 35% churn if HIGH unaddressed · 8% if resolved within 24h*
 
 ---
 
 ## Key Findings
 
-*(Updated after full analysis)*
+**NPS by product (simulated, complaint corpus):**
 
-- **Response timeliness is the #1 severity driver** — banks that miss SLA targets
-  generate the highest-severity, highest-churn-risk complaints
-- **HIGH severity complaints concentrate in Mortgage and Student Loan products** —
-  complexity and money stakes drive escalation
-- **"Silent Dissatisfied" segment** — MEDIUM severity, low NPS — is the hardest to detect
-  without combining severity + NPS + segmentation
-- **Customers with 2+ complaints** are at extreme churn risk regardless of resolution outcome,
-  connecting to [Project 1: Banking Churn Prediction](https://github.com/nicolaszuleta95/banking-churn-prediction)
-- **Model lift over random triage**: reviewing the top 20% highest-predicted severity
-  complaints catches significantly more HIGH severity cases than random review
+| Product | NPS |
+|---------|-----|
+| Credit card | **+11.1** |
+| Checking / Savings | +3.5 |
+| Personal loan | −12.8 |
+| Student loan | −14.9 |
+| Mortgage | **−15.8** |
+
+**Top dissatisfaction drivers by topic (NPS):**
+
+| Topic | NPS | Complaints | % Detractors |
+|-------|-----|-----------|-------------|
+| Incorrect Charges & Unauthorized Debits | **−17.9** | 6,894 | 29.1% |
+| Mortgage & Loan Servicing | −6.8 | 1,774 | 25.4% |
+| Credit Reporting & Disputes | −6.4 | 19,493 | 25.7% |
+| Customer Service & Communication | **+8.9** | 7,059 | 20.2% |
+
+> Volume ≠ urgency: Credit Reporting dominates volume (55%) but ranks only #2 by NPS damage. Incorrect Charges is 3.5× smaller but generates 2.7× more NPS loss per complaint.
+
+**Customer segments (K-Means, k=7):**
+
+| Segment | Avg NPS | Dominant Severity | % Detractors | % HIGH | n |
+|---------|---------|------------------|--------------|--------|---|
+| Critical Risk | 5.1 | **HIGH** | 68.6% | **100%** | 905 |
+| Silent Dissatisfied | 6.5 | MEDIUM | 43.4% | 0% | 6,200 |
+| Neutral Observers | 6.5 | MEDIUM | 43.5% | 0% | 7,471 |
+| Promoter Candidates | 6.5 | MEDIUM | 43.9% | 0% | 5,287 |
+| Active Promoters | 8.4 | MEDIUM | 0.0% | 0% | 3,073 |
+| Promoter | 8.5 | MEDIUM | 0.1% | 0% | 4,908 |
+| Promoter | 8.7 | LOW | 0.0% | 0% | 7,376 |
+
+> The Critical Risk segment (2.6% of customers) concentrates 100% of HIGH-severity complaints. NPS alone (5.1) would not distinguish them from the other 6.5-NPS clusters — severity is the differentiating signal.
 
 ---
 
-## Demo
+## System Architecture
 
-Four sections in the interactive dashboard:
+```
+consumer_complaints.csv (555K records)
+        │
+        ▼
+[01] EDA & NPS Analysis ──────────────────────────── banking_complaints.csv
+        │                                             (35,226 with narrative)
+        ▼
+[02] Severity Predictor (XGBoost) ───────────────── severity_model.joblib
+        │   8 structured features                     features_nlp.csv
+        │   Optuna hyperparameter tuning              + severity columns
+        ▼
+[03] Topic Mining (LDA k=4) ─────────────────────── lda_model.pkl
+        │   TF-IDF + spaCy preprocessing              + topic columns
+        ▼
+[04] Customer Segmentation (K-Means k=7) ────────── kmeans_model.joblib
+        │   severity + NPS + topic features            + cluster columns
+        ▼
+[app] Streamlit Dashboard (4 sections)
+```
 
-- **NPS Dashboard** — Overall NPS gauge, segment distribution, NPS by product, temporal trend
-- **Severity Analyzer** — Enter complaint details → XGBoost severity prediction in real time, with class probabilities and top feature drivers
-- **Topic Explorer** — WordClouds per topic, NPS by topic, % HIGH severity per topic, most representative complaints
-- **Customer Segments** — Interactive cluster visualization, severity + NPS profiles, CX action recommendations
-
-[**Try the live demo →**](#)
-
-> *Add screenshot here after Streamlit deploy*
-> `![App Screenshot](reports/app_screenshot.png)`
+| Layer | Tool | Role |
+|-------|------|------|
+| Preprocessing | spaCy `en_core_web_sm` | Tokenization, lemmatization for LDA |
+| NPS Analysis | Custom logic | Simulate and calculate NPS from CFPB resolution data |
+| Severity Prediction | XGBoost + Optuna | Predict complaint severity from 8 structured features |
+| Topic Mining | sklearn LDA + TF-IDF | Discover 4 recurring complaint themes |
+| Segmentation | sklearn K-Means | 7 CX-actionable customer segments |
+| Dashboard | Streamlit + Plotly | Interactive analytics app |
 
 ---
 
@@ -165,38 +176,36 @@ cx-intelligence-nps/
 │
 ├── data/
 │   ├── raw/
-│   │   └── consumer_complaints.csv   # Original CFPB dataset — never modified
+│   │   └── consumer_complaints.csv      # CFPB dataset — never modified
 │   └── processed/
-│       ├── banking_complaints.csv    # Filtered and cleaned
-│       └── features_nlp.csv         # All features: severity, topics, clusters
+│       ├── banking_complaints.csv       # Filtered · 35,226 rows with narrative
+│       └── features_nlp.csv            # Severity + topics + clusters (accumulated)
 │
 ├── notebooks/
-│   ├── 01_eda_nps_analysis.ipynb       # EDA + NPS calculation + business insights
-│   ├── 02_complaint_severity.ipynb     # Severity Predictor — XGBoost from structured features
-│   ├── 03_topic_mining.ipynb           # LDA + topic naming + NPS by topic
-│   └── 04_customer_segmentation.ipynb  # K-Means + severity + CX segment profiles
+│   ├── 01_eda_nps_analysis.ipynb        # EDA · NPS −5.59 · by product / time / channel
+│   ├── 02_complaint_severity.ipynb      # XGBoost severity · 74.7% acc · 4.4× lift
+│   ├── 03_topic_mining.ipynb            # LDA k=4 · NPS by topic · top drivers
+│   └── 04_customer_segmentation.ipynb   # K-Means k=7 · CX segment profiles
 │
 ├── src/
-│   ├── __init__.py
-│   ├── data_processing.py   # Load, filter, and clean CFPB data
-│   ├── nps_calculator.py    # NPS logic: simulate, classify, calculate, trend
-│   ├── severity.py          # Severity Predictor: features + label + SeverityPredictor class
-│   ├── topics.py            # TF-IDF + LDA + topic naming
-│   └── segmentation.py      # K-Means + cluster profiles
+│   ├── data_processing.py    # Load, filter, clean CFPB data
+│   ├── nps_calculator.py     # NPS simulation, classification, trend
+│   ├── severity.py           # Feature engineering + SeverityPredictor class
+│   ├── topics.py             # TF-IDF + LDA + topic assignment
+│   └── segmentation.py       # K-Means + cluster profiles + naming
 │
 ├── models/
-│   ├── severity_model.joblib    # Serialized XGBoost severity model
+│   ├── severity_model.joblib    # XGBoost · 1.3 MB
 │   ├── severity_features.json   # Feature order for inference reproducibility
-│   ├── lda_model.pkl            # Serialized topic model
-│   └── kmeans_model.joblib      # Serialized segmentation model
+│   ├── lda_model.pkl            # LDA + TF-IDF vectorizer · 512 KB
+│   └── kmeans_model.joblib      # K-Means · 139 KB
 │
 ├── app/
-│   └── app.py                   # Streamlit dashboard (4 sections)
+│   └── app.py               # Streamlit dashboard · 4 sections
 │
 ├── reports/
-│   └── model_card.md            # Technical decisions and model documentation
+│   └── model_card.md        # Model documentation · decisions · limitations
 │
-├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
@@ -210,49 +219,38 @@ cx-intelligence-nps/
 | Property | Value |
 |----------|-------|
 | Provider | Consumer Financial Protection Bureau (US Government) |
-| Total records | 180,000+ |
-| After banking filter | ~40,000–60,000 |
-| Text field | `Consumer complaint narrative` (free text) |
+| Raw records | 555,957 |
+| After banking product filter | 354,805 |
+| After narrative text filter | **35,226** (9.9% have free-text narrative) |
+| Submission channel | 100% Web (CFPB requires consent to share narratives) |
+| Period | March 2015 – April 2016 |
 
-**Banking products included:**
+Banking products included:
 ```python
 ["Checking or savings account", "Credit card or prepaid card",
  "Mortgage", "Personal loan", "Student loan"]
 ```
 
+> **Data note:** NPS scores are **simulated** from CFPB resolution data (timeliness + outcome → proxy satisfaction score). This is documented explicitly — not presented as measured NPS.
+
 ---
 
 ## Key Technical Decisions
 
-**1. Severity over sentiment**
-Sentiment classification was empirically rejected — 6 models, ~33% accuracy. Severity from
-structured CFPB variables was redefined as the target, producing a model with CX operational value.
+**1. Severity over sentiment**  
+Sentiment classification was empirically rejected after 6 models achieved 33–41% accuracy (3-class random baseline: 33%). Root cause: CFPB is 100% complaints — no polarity signal. Severity from structured variables solved the problem correctly.
 
-**2. XGBoost as primary model**
-Consistent with Project 1 (banking-churn-prediction). Performs well on structured tabular
-banking data. Built-in feature importance replaces SHAP without loss of interpretability.
+**2. XGBoost as primary model**  
+Consistent with [Project 1: Banking Churn Prediction](https://github.com/nicolaszuleta95/banking-churn-prediction). Handles structured tabular banking data without normalization. Built-in feature importance without SHAP.
 
-**3. Optuna for hyperparameter tuning**
-More efficient than GridSearchCV for XGBoost's large hyperparameter space. Falls back to
-GridSearchCV if Optuna is not installed.
+**3. Optuna for hyperparameter tuning**  
+More efficient than GridSearchCV over XGBoost's hyperparameter space. Falls back to GridSearchCV automatically if Optuna is not installed.
 
-**4. spaCy for preprocessing only**
-Tokenization, lemmatization, linguistic cleaning. Severity classification uses structured
-features — each tool used for what it does best.
+**4. sklearn LDA over gensim**  
+gensim 3.8 is incompatible with scipy ≥ 1.14 (`triu` removed). Coherence scoring reimplemented using sklearn held-out perplexity — no external dependency, same directional signal for k selection.
 
-**5. NPS simulated from resolution data**
-CFPB doesn't include satisfaction scores. NPS simulated from response timeliness + resolution
-outcome as proxy. Documented transparently — not presented as measured NPS.
-
----
-
-## Data Note
-
-The NPS scores in this project are **simulated** using CFPB resolution data as a proxy
-(response timeliness + resolution outcome → satisfaction score). This is a methodological
-choice documented for transparency — not presented as directly measured NPS.
-
-All data is public and sourced from official US government sources.
+**5. NPS simulated from resolution data**  
+CFPB doesn't include satisfaction scores. NPS simulated from response timeliness + resolution outcome as proxy. Documented transparently in model card.
 
 ---
 
@@ -268,17 +266,19 @@ python -m spacy download en_core_web_sm
 
 **2. Prepare data**
 ```bash
-# Place consumer_complaints.csv in data/raw/ (download from Kaggle link above)
-# Run notebooks in order: 01 → 02 → 03 → 04
+# Place consumer_complaints.csv in data/raw/
+# (download from Kaggle link above)
+# Run notebooks in order:
+jupyter notebook notebooks/01_eda_nps_analysis.ipynb
+jupyter notebook notebooks/02_complaint_severity.ipynb
+jupyter notebook notebooks/03_topic_mining.ipynb
+jupyter notebook notebooks/04_customer_segmentation.ipynb
 ```
 
-**3. Launch the app**
+**3. Launch the dashboard**
 ```bash
 streamlit run app/app.py
 ```
-
-> The severity model (`models/severity_model.joblib`) is loaded automatically.
-> If not present, run Notebook 02 first to train and save it.
 
 ---
 
@@ -287,13 +287,13 @@ streamlit run app/app.py
 | Category | Tools |
 |----------|-------|
 | Data | `pandas`, `numpy` |
-| NLP preprocessing | `spaCy` (en_core_web_sm) |
+| NLP preprocessing | `spaCy` (`en_core_web_sm`) |
 | Severity prediction | `xgboost`, `lightgbm`, `scikit-learn` |
-| Hyperparameter tuning | `optuna` |
-| Topic modeling | `scikit-learn` (TF-IDF + LDA), `gensim` (coherence) |
+| Hyperparameter tuning | `optuna` (GridSearchCV fallback) |
+| Topic modeling | `scikit-learn` (TF-IDF + LDA) |
 | Segmentation | `scikit-learn` (K-Means) |
 | Visualization | `plotly`, `seaborn`, `matplotlib`, `wordcloud` |
-| App & deployment | `streamlit` |
+| App | `streamlit` |
 | Serialization | `joblib` |
 
 ---
@@ -302,25 +302,23 @@ streamlit run app/app.py
 
 See [`reports/model_card.md`](reports/model_card.md) for:
 - Intended use and out-of-scope applications
-- Severity model design decisions and limitations
-- NPS simulation methodology and limitations
-- Why sentiment classification was rejected
+- Feature engineering decisions and encoding logic
+- Severity label definition (rule-based + NPS refinement)
+- Evaluation metrics and business impact
+- Known limitations and ethical considerations
 
 ---
 
 ## Author
 
-**Nicolás Zuleta Sierra**
+**Nicolás Zuleta Sierra**  
 Data Scientist · 7+ years · Banking & CX Analytics · Medellín, Colombia
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0077B5?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/nicolaszuletasierra/)
 [![GitHub](https://img.shields.io/badge/GitHub-Follow-181717?style=flat&logo=github&logoColor=white)](https://github.com/nicolaszuleta95)
-[![Email](https://img.shields.io/badge/Email-Contact-D14836?style=flat&logo=gmail&logoColor=white)](mailto:nicolaszuleta95@gmail.com)
 
 ---
 
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
-
----

@@ -54,12 +54,23 @@ st.set_page_config(
 
 @st.cache_data(show_spinner="Loading complaints data…")
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load processed and NLP-feature datasets."""
+    """Load processed and NLP-feature datasets.
+
+    Merges nps_score / nps_segment from banking_complaints.csv into features_nlp.csv
+    so that Topic Explorer and Customer Segments can compute NPS metrics.
+    """
     if not PROCESSED_PATH.exists():
         return pd.DataFrame(), pd.DataFrame()
 
     processed = pd.read_csv(PROCESSED_PATH, low_memory=False)
     features = pd.read_csv(FEATURES_PATH, low_memory=False) if FEATURES_PATH.exists() else pd.DataFrame()
+
+    # Merge NPS columns into features (they live in banking_complaints.csv, not features_nlp.csv)
+    if not features.empty and not processed.empty and "nps_score" not in features.columns:
+        nps_cols = [c for c in ["complaint_id", "nps_score", "nps_segment"] if c in processed.columns]
+        if len(nps_cols) > 1:
+            features = features.merge(processed[nps_cols], on="complaint_id", how="left")
+
     return processed, features
 
 
@@ -129,7 +140,7 @@ def severity_badge(label: str) -> str:
 # Sidebar navigation
 # ---------------------------------------------------------------------------
 
-st.sidebar.image("https://img.shields.io/badge/CX_Intelligence-NPS_%26_Severity-1e40af?style=for-the-badge", use_column_width=True)
+st.sidebar.image("https://img.shields.io/badge/CX_Intelligence-NPS_%26_Severity-1e40af?style=for-the-badge", width=300)
 st.sidebar.markdown("## Navigation")
 
 page = st.sidebar.radio(
@@ -143,6 +154,15 @@ st.sidebar.markdown(
     "**Author:** Nicolás Zuleta Sierra  \n"
     "[![LinkedIn](https://img.shields.io/badge/-LinkedIn-blue?logo=linkedin)](https://www.linkedin.com/in/nicolaszuletasierra/) "
     "[![GitHub](https://img.shields.io/badge/-GitHub-181717?logo=github)](https://github.com/nicolaszuleta95)"
+)
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    "**Model Performance**  \n"
+    "🎯 XGBoost F1-weighted: **0.726**  \n"
+    "🔍 HIGH recall (top 20%): **87%**  \n"
+    "⚡ Lift over random: **4.4×**  \n"
+    "📊 Dataset: **35,226** complaints  \n"
+    "🏷️ Topics (LDA k=4) · Segments (k=7)"
 )
 
 # ---------------------------------------------------------------------------
@@ -287,8 +307,10 @@ elif page == "Severity Analyzer":
 
     st.info(
         "Enter complaint details below. The model predicts severity (LOW / MEDIUM / HIGH) "
-        "from structured CFPB variables — no NLP processing required. "
-        "Sentiment classification was discarded after testing 6 models (~33–41% accuracy = near random)."
+        "from structured CFPB variables — no NLP or embeddings required.  \n"
+        "**XGBoost performance:** 74.7% accuracy · F1-weighted 0.726 · **4.4× lift** over random triage "
+        "(detects 87% of HIGH-severity cases reviewing only the top 20% of complaints).  \n"
+        "Sentiment classification was discarded after testing 6 models (~33–41% accuracy = near random chance)."
     )
 
     import sys
@@ -495,22 +517,23 @@ elif page == "Customer Segments":
         st.info("Run Notebook 04 to generate cluster assignments.")
         st.stop()
 
-    # CX names mapping (populated after notebook 04)
-    cx_names = {
-        0: "Critical Risk",
-        1: "Silent Dissatisfied",
-        2: "Neutral Observers",
-        3: "Promoter Candidates",
-        4: "Active Promoters",
-    }
+    # Use cluster_name from features_nlp.csv (assigned by notebook 04 name_clusters())
     if "cluster_name" in df_features.columns:
         segment_col = "cluster_name"
     else:
         df_features = df_features.copy()
-        df_features["cluster_name"] = df_features["cluster"].map(cx_names).fillna(df_features["cluster"].astype(str))
+        df_features["cluster_name"] = df_features["cluster"].astype(str)
         segment_col = "cluster_name"
 
-    segment_options = sorted(df_features[segment_col].unique())
+    # Build cluster→name lookup from data (not hardcoded — reflects actual k)
+    cluster_name_map = (
+        df_features.dropna(subset=["cluster", segment_col])
+        .drop_duplicates("cluster")
+        .set_index("cluster")[segment_col]
+        .to_dict()
+    )
+
+    segment_options = sorted(df_features[segment_col].dropna().unique())
     selected_segment = st.selectbox("Select customer segment:", segment_options)
 
     seg_df = df_features[df_features[segment_col] == selected_segment]
@@ -537,18 +560,38 @@ elif page == "Customer Segments":
         # CX Recommendations
         st.markdown("#### CX Recommendation")
         recommendations = {
-            "Critical Risk": "Immediate outreach required. Prioritize personal follow-up within 48h. "
-                             "Escalate to specialized retention team.",
-            "Silent Dissatisfied": "Proactive NPS survey recommended. Neutral language masks high churn risk. "
-                                   "Segment for targeted recovery campaigns.",
-            "Neutral Observers": "Monitor for sentiment drift. Opportunity for proactive engagement "
-                                  "to move toward Promoter territory.",
-            "Promoter Candidates": "Leverage for referral programs. Request public reviews. "
-                                    "Cross-sell premium products.",
-            "Active Promoters": "Activate as brand ambassadors. Referral incentives apply. "
-                                 "Low intervention needed.",
+            "Critical Risk": (
+                "🚨 **Immediate escalation required.** 100% HIGH severity, 68.6% Detractors. "
+                "Assign a dedicated case manager within 48h. Mortgage-focused — coordinate with "
+                "loan servicing team. Highest churn risk in the portfolio."
+            ),
+            "Silent Dissatisfied": (
+                "⚠️ **Proactive recovery campaign.** 43.4% Detractors with zero HIGH severity "
+                "— these customers are dissatisfied but not escalating. Proactive NPS survey + "
+                "targeted outreach before they churn quietly."
+            ),
+            "Neutral Observers": (
+                "📊 **Monitor and engage.** Similar NPS to Silent Dissatisfied (6.46) but "
+                "Mortgage-dominant — watch for severity escalation. Educational content and "
+                "proactive service updates can shift this group toward Promoters."
+            ),
+            "Promoter Candidates": (
+                "📈 **Convert to Promoters.** 6.46 avg NPS with 43.9% Detractors — mixed signal. "
+                "Target with satisfaction follow-up after resolution. Low-cost intervention, "
+                "high upside if moved to 8+."
+            ),
+            "Active Promoters": (
+                "⭐ **Activate for referrals.** 8.39 avg NPS, near-zero Detractors. "
+                "Referral incentive program, cross-sell premium products. Minimal service "
+                "intervention needed — protect what's working."
+            ),
+            "Promoter": (
+                "⭐ **High-satisfaction segment.** 8.48–8.74 avg NPS, essentially zero Detractors. "
+                "Brand ambassador program, Google/Trustpilot reviews, referral activation. "
+                "Maintain satisfaction — do not disrupt."
+            ),
         }
-        rec = recommendations.get(selected_segment, "Analyze segment characteristics for tailored action.")
+        rec = recommendations.get(selected_segment, recommendations.get("Promoter", "Analyze segment characteristics for tailored action."))
         st.info(rec)
 
     # --- PCA scatter plot ---
@@ -575,15 +618,22 @@ elif page == "Customer Segments":
 
     if "nps_segment" in df_features.columns:
         profiles = build_cluster_profiles(df_features)
-        profiles["segment_name"] = profiles["cluster"].map(cx_names).fillna(profiles["cluster"].astype(str))
+        profiles["segment_name"] = profiles["cluster"].map(cluster_name_map).fillna(profiles["cluster"].astype(str))
         display_cols = [c for c in ["segment_name", "n_complaints", "avg_nps", "dominant_severity",
                                      "avg_severity_proba_high", "top_product", "pct_detractors",
                                      "pct_high_severity"] if c in profiles.columns]
         st.dataframe(
-            profiles[display_cols],
+            profiles[display_cols].rename(columns={
+                "segment_name": "Segment", "n_complaints": "N", "avg_nps": "Avg NPS",
+                "dominant_severity": "Dominant Severity", "avg_severity_proba_high": "Avg P(HIGH)",
+                "top_product": "Top Product", "pct_detractors": "% Detractors",
+                "pct_high_severity": "% HIGH Severity",
+            }),
             use_container_width=True,
             hide_index=True,
         )
+    elif "cluster" in df_features.columns:
+        st.info("nps_segment not available — run Notebooks 01 + 04 to populate NPS columns.")
 
     # --- Product distribution by cluster ---
     if "product" in df_features.columns:

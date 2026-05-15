@@ -305,10 +305,10 @@ class SeverityPredictor:
     def _build_model(self, model_type: str):
         if model_type == "logistic":
             return LogisticRegression(
-                max_iter=1000,
+                max_iter=3000,
                 class_weight="balanced",
                 random_state=42,
-                multi_class="multinomial",
+                solver="saga",
             )
         elif model_type == "xgboost":
             if not _XGBOOST_AVAILABLE:

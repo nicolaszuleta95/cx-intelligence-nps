@@ -170,10 +170,11 @@ def assign_topics(
 def calculate_coherence(
     texts: list[str], range_topics: range
 ) -> list[dict[str, float | int]]:
-    """Compute gensim coherence scores to guide n_topics selection.
+    """Estimate topic quality using held-out perplexity as a coherence proxy.
 
-    Uses the C_V coherence measure, which correlates well with human
-    judgements of topic quality.
+    Uses sklearn LDA with a 20% held-out split. Returns negative perplexity
+    (higher = better) so the direction is consistent with coherence scores.
+    This is a self-contained sklearn implementation — no gensim required.
 
     Args:
         texts: List of tokenized texts (whitespace-separated strings).
@@ -182,30 +183,25 @@ def calculate_coherence(
     Returns:
         List of dicts with keys 'n_topics' and 'coherence', sorted by n_topics.
     """
-    from gensim import corpora
-    from gensim.models import CoherenceModel, LdaModel
+    from sklearn.feature_extraction.text import CountVectorizer
+    from sklearn.model_selection import train_test_split
 
-    tokenized = [t.split() for t in texts]
-    dictionary = corpora.Dictionary(tokenized)
-    dictionary.filter_extremes(no_below=5, no_above=0.9)
-    corpus = [dictionary.doc2bow(doc) for doc in tokenized]
+    bow_vectorizer = CountVectorizer(min_df=5, max_df=0.9, max_features=5000)
+    matrix = bow_vectorizer.fit_transform(texts)
+    train_mat, test_mat = train_test_split(matrix, test_size=0.2, random_state=42)
 
     results: list[dict] = []
     for n in range_topics:
-        lda_g = LdaModel(
-            corpus=corpus,
-            id2word=dictionary,
-            num_topics=n,
+        lda = LatentDirichletAllocation(
+            n_components=n,
+            max_iter=10,
+            learning_method="online",
             random_state=LDA_RANDOM_STATE,
-            passes=5,
         )
-        cm = CoherenceModel(
-            model=lda_g,
-            texts=tokenized,
-            dictionary=dictionary,
-            coherence="c_v",
-        )
-        results.append({"n_topics": n, "coherence": round(cm.get_coherence(), 4)})
+        lda.fit(train_mat)
+        # Negative perplexity — higher is better (aligns with coherence direction)
+        score = -lda.perplexity(test_mat)
+        results.append({"n_topics": n, "coherence": round(score, 4)})
 
     return results
 

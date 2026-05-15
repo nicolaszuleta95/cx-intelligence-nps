@@ -122,17 +122,26 @@ MEDIUM = everything else
 
 ## 6. Evaluation Metrics
 
-*(Populated after running notebook 02)*
+**Dataset:** 35,226 complaints · 80/20 train-test split · 5-fold stratified CV
 
 | Model | Accuracy | F1-weighted | Notes |
 |-------|----------|-------------|-------|
-| Logistic Regression | *(run nb02)* | *(run nb02)* | Baseline |
-| XGBoost (tuned) | *(run nb02)* | *(run nb02)* | Production |
+| Logistic Regression | 72.99% | 0.7131 | Interpretable baseline |
+| XGBoost (Optuna-tuned) | **74.72%** | **0.7258** | Production (+1.3 pp F1) |
 
-**Primary metric:** F1-weighted — accounts for class imbalance.
+**Cross-validation (XGBoost, 5-fold):** accuracy 74.08% ± 0.42%
 
-**Business metric:** Detection rate of HIGH severity complaints in top-20% review
-(lift over random triage). See notebook 02 Section 7.
+**Primary metric:** F1-weighted — accounts for class imbalance (MEDIUM 53.4%, LOW 43.7%, HIGH 3.0%).
+
+**Business metric:** Detection rate of HIGH severity complaints in top-20% review.
+
+| Triage method | HIGH detected | Detection rate | Churn cost (est.) |
+|---------------|--------------|----------------|-------------------|
+| Random 20% review | 41 / 208 | 20.0% | $29,225 |
+| Model top-20% by P(HIGH) | **181 / 208** | **87.0%** | **$4,725** |
+| **Model lift** | | **4.4×** | **$24,500 saved** |
+
+Assumptions: $500/customer lost · 35% churn if HIGH unaddressed · 8% if addressed within 24h.
 
 ---
 
@@ -183,4 +192,4 @@ Available on Kaggle: https://www.kaggle.com/datasets/cfpb/us-consumer-finance-co
 
 ---
 
-*Last updated: May 2026 — Active project*
+*Last updated: May 2026 — Models trained and evaluated*
