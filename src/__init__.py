@@ -1,1 +1,1 @@
-"""CX Intelligence — NPS & Sentiment Analysis package."""
+"""CX Intelligence — NPS & Complaint Severity Analysis package."""
