@@ -1,29 +1,49 @@
-# Model Card — Sentiment Analysis for Banking Complaints
+# Model Card — Complaint Severity Predictor
 
-> CX Intelligence: NPS & Sentiment Analysis
+> CX Intelligence: NPS & Complaint Severity Analysis  
 > Author: Nicolás Zuleta Sierra · [LinkedIn](https://www.linkedin.com/in/nicolaszuletasierra/)
 
 ---
 
-## 0. Model Evolution
+## 0. Why This Model Exists — The Pivot Decision
 
-| Version | Model | Training data | Accuracy | F1 weighted | Status |
-|---------|-------|--------------|----------|-------------|--------|
-| v1 | VADER (baseline) | Social media lexicon | 38.0% | 0.338 | Baseline only |
-| v1 | FinBERT | Financial news (4.9B tokens) | 32.8% | 0.270 | Replaced |
-| **v2** | **DistilBERT fine-tuned** | **34K CFPB resolution labels** | ***(run nb02 §7)*** | ***(run nb02 §7)*** | **Production** |
+Sentiment classification (positive/negative/neutral) was the original approach.
+After testing **6 models**, all performed near random chance:
 
-**Why v2 replaced v1:** Both off-the-shelf models (VADER, FinBERT) performed near random chance (33%) because they classify *text sentiment* but the ground truth labels reflect *resolution outcome*. Reframing the task as supervised fine-tuning on CFPB metadata resolved the label-text mismatch and increased training data 140×. See notebook 02 §6 for root cause analysis.
+| Model | Accuracy | F1-weighted | Verdict |
+|-------|----------|-------------|---------|
+| VADER | 38.0% | 0.338 | Near-random (33.3% baseline) |
+| FinBERT | 32.8% | 0.270 | Predicts zero positives |
+| RoBERTa Twitter | ~35% | ~0.31 | Domain mismatch |
+| Zero-Shot DeBERTa | ~37% | ~0.33 | No signal |
+| DistilBERT fine-tuned v1 | ~39% | ~0.31 | Collapses to negative |
+| DistilBERT fine-tuned v2 | ~41% | ~0.34 | Marginal — not production-ready |
+
+**Root cause:** The CFPB dataset is 100% complaints by definition. Classifying
+positive/negative/neutral in a corpus where every record describes a problem has no
+semantic validity. All variation is in *urgency*, not *polarity*.
+
+**Decision:** Redefine the target as **complaint severity (LOW / MEDIUM / HIGH)** —
+a variable that exists naturally in CFPB structured metadata and directly maps to CX action priorities.
 
 ---
 
 ## 1. Intended Use
 
-**Primary use case:** Binary/ternary sentiment classification (positive / negative / neutral) applied to formal banking complaint narratives in English.
+**Primary use case:** Triaging incoming banking complaints by urgency to prioritize
+CX team action — enabling automated routing and capacity allocation.
 
-**Target users:** CX analytics teams at financial institutions who need to understand the emotional tone of customer feedback at scale.
+**Target users:** CX analytics teams and operations managers at financial institutions
+who need to prioritize complaint resolution at scale.
 
-**Supported input:** Free-text English complaint narratives from consumer-facing banking products (checking accounts, credit cards, mortgages, personal loans, student loans). Optimal performance is on texts between 20 and 512 tokens.
+**Supported input:** Structured CFPB complaint metadata fields:
+- `timely_response` (Yes/No)
+- `company_response_to_consumer` (resolution type)
+- `product` (banking product category)
+- `consumer_complaint_narrative` (free text — used for word count only)
+- `submitted_via` (submission channel)
+- `date_received`, `date_sent_to_company` (for days_to_resolution)
+- `complaint_id` (for multi-complaint detection)
 
 ---
 
@@ -31,180 +51,134 @@
 
 | Scenario | Why out of scope |
 |----------|-----------------|
-| Non-English text | Models are trained/tuned on English financial text only |
-| Social media / tweets | Domain mismatch — see Technical Decision §7 |
-| Texts shorter than 5 words | Insufficient context for reliable classification |
-| Real-time fraud detection | Not a safety-critical classification system |
-| Non-financial domains | FinBERT vocabulary is finance-specific |
+| Real-time fraud detection | Not a safety-critical system |
+| Non-English complaints | CFPB is English-only corpus |
+| Measuring customer satisfaction (NPS) | Severity ≠ NPS — separate signal |
+| Replacing human case managers | Triage tool, not autonomous decision-maker |
+| Non-banking complaints | Product encoding is banking-specific |
 
 ---
 
-## 3. Models in This Pipeline
+## 3. Model Architecture
 
-### 3.1 VADER — Baseline Model
-
-| Property | Value |
-|----------|-------|
-| **Type** | Rule-based lexicon (VADER) |
-| **Library** | `vaderSentiment` |
-| **Pre-training** | Social media text (Twitter, product reviews, movie reviews) |
-| **Classification** | compound ≥ 0.05 → positive · ≤ −0.05 → negative · else → neutral |
-| **Role** | Baseline for performance comparison; zero-compute reference |
-
-**Why VADER is kept:** Interpretability and speed. No GPU required. Useful as a sanity check and for environments without HuggingFace access.
-
-### 3.2 DistilBERT Fine-Tuned — Production Model (v2)
+### Primary Model — XGBoost Classifier
 
 | Property | Value |
 |----------|-------|
-| **Model ID** | `distilbert-base-uncased` (fine-tuned) |
-| **Saved path** | `models/distilbert_cx/` |
-| **Base architecture** | DistilBERT (6 layers, 66M parameters — 40% smaller than BERT-base) |
-| **Training data** | 34K+ CFPB complaints with `company_response_to_consumer` as label proxy |
-| **Label mapping** | monetary relief → positive · non-monetary → neutral · explanation/untimely → negative |
-| **Class balancing** | Undersampled to equal class counts (min class × 3 total) |
-| **Fine-tuning** | 3 epochs · lr=2e-5 · batch=16 · max_length=256 · warmup=100 steps |
-| **Input limit** | 256 tokens (truncation applied; covers ~80% of complaint lengths) |
-| **Role** | Production model — trained on domain-aligned labels |
+| **Algorithm** | XGBoost (`XGBClassifier`) |
+| **Task** | Multi-class classification (3 classes: LOW / MEDIUM / HIGH) |
+| **Training data** | CFPB Consumer Complaints — banking products filter (~35K records) |
+| **Features** | 8 structured features (see Section 4) |
+| **Tuning** | Optuna hyperparameter optimization (30 trials, 3-fold CV) |
+| **Evaluation** | 5-fold cross-validation + held-out test set (20%) |
+| **Serialization** | `models/severity_model.joblib` (joblib) |
+| **Feature list** | `models/severity_features.json` (ordered list for inference) |
+| **Why XGBoost** | Consistent with Project 1 (banking-churn-prediction); strong on structured tabular banking data; built-in feature importance without SHAP |
 
-**Why DistilBERT over FinBERT:** FinBERT was trained on investor-facing financial news. DistilBERT fine-tuned on CFPB complaints learns from the actual domain, resolving the training-evaluation mismatch.
-
-### 3.3 FinBERT — Historical Baseline
+### Baseline Model — Logistic Regression
 
 | Property | Value |
 |----------|-------|
-| **Model ID** | `ProsusAI/finbert` |
-
-| Property | Value |
-|----------|-------|
-| **Model ID** | `ProsusAI/finbert` |
-| **Hub** | [HuggingFace](https://huggingface.co/ProsusAI/finbert) |
-| **Base architecture** | BERT-base (12 layers, 110M parameters) |
-| **Pre-training corpus** | Financial PhraseBank + Reuters financial news + Bloomberg articles (~4.9B tokens) |
-| **Fine-tuning task** | Sentiment classification on Financial PhraseBank (positive/negative/neutral) |
-| **Input limit** | 512 tokens (hard limit — truncation always applied) |
-| **Batching** | batch_size=32 for inference efficiency |
-| **Role** | Production model — higher F1 on formal banking text |
+| **Algorithm** | Logistic Regression (`multi_class='multinomial'`, `class_weight='balanced'`) |
+| **Role** | Interpretable baseline for performance comparison |
+| **Why kept** | Transparency — documents the minimum bar that XGBoost must exceed |
 
 ---
 
-## 4. Training and Evaluation Data
+## 4. Features
 
-### Pre-training (external — not modified in this project)
+| Feature | Source | Engineering |
+|---------|--------|-------------|
+| `timely_response_binary` | `timely_response` | 1 = Yes, 0 = No |
+| `response_type_encoded` | `company_response_to_consumer` | Ordinal favorability: 5 (monetary relief) → 0 (unknown) |
+| `product_encoded` | `product` | Ordinal severity weight: Mortgage=4, Student loan=3, Credit card=2, Checking=2, Personal=1 |
+| `complaint_length` | `consumer_complaint_narrative` | Word count (0 if no narrative) |
+| `has_narrative` | `consumer_complaint_narrative` | Binary: 1 = has text, 0 = absent |
+| `submission_channel_encoded` | `submitted_via` | Label encoded |
+| `days_to_resolution` | `date_received`, `date_sent_to_company` | Delta in calendar days |
+| `multi_complaint_flag` | `complaint_id` | 1 = same complaint_id appears >1 times |
 
-- **FinBERT:** Pre-trained by ProsusAI on financial news corpora (Reuters, Bloomberg). Fine-tuned on the [Financial PhraseBank](https://huggingface.co/datasets/financial_phrasebank) dataset.
-- **VADER:** Lexicon built from human ratings of social media text. Published by Hutto & Gilbert (2014).
-
-### Evaluation Data (produced in this project)
-
-| Property | Value |
-|----------|-------|
-| **Source** | CFPB Consumer Financial Protection Bureau complaints |
-| **Subset** | Banking products only (checking, credit card, mortgage, personal loan, student loan) |
-| **Size** | 250 complaint narratives |
-| **Labeling method** | Manual annotation by the author |
-| **Annotator** | Nicolás Zuleta Sierra (7 years banking CX experience) |
-| **Label distribution** | 100 negative · 80 positive · 70 neutral |
-| **Desambiguation rule** | In case of doubt → `negative` (Type II errors are costlier in CX banking) |
-| **File** | `data/raw/ground_truth.csv` |
-
-> **Limitation:** 250 records is exploratory, not statistically robust. Results should be interpreted directionally, not as definitive benchmarks.
+**Missing value strategy:** `days_to_resolution` imputed with median. All others default to 0.
 
 ---
 
-## 5. Evaluation Metrics
+## 5. Target Variable — Severity Label
 
-| Metric | VADER | FinBERT | Notes |
-|--------|-------|---------|-------|
-| **Accuracy** | **38.0%** | 32.8% | VADER wins; both near 33% random baseline |
-| **F1 (weighted)** | **0.338** | 0.270 | VADER wins by +0.068 |
-| **F1 (positive class)** | 0.41 | 0.00 | FinBERT predicts zero positives |
-| **F1 (negative class)** | **0.46** | 0.43 | Near-even |
-| **F1 (neutral class)** | 0.07 | **0.35** | FinBERT better at identifying neutral text |
-| **Full dataset % neutral** | 4.0% | **63.6%** | FinBERT is more conservative |
+Severity is defined by rule-based logic from CFPB structured variables:
 
-**Ground truth: n=250 · 100 negative · 80 positive · 70 neutral**
+```
+HIGH  = (timely_response == No OR response_type_encoded <= 1) AND complaint_length > 150
+LOW   = timely_response == Yes AND response_type_encoded >= 4 AND complaint_length <= 150
+MEDIUM = everything else
+```
 
-### Why F1-weighted is the primary metric
+**NPS refinement** (applied after base rules):
+- `nps_score <= 4` (Detractor) in MEDIUM zone → upgrade to HIGH
+- `nps_score >= 8` (Promoter) in MEDIUM zone → downgrade to LOW
 
-The label distribution is imbalanced (40% negative, 32% positive, 28% neutral). Weighted F1 accounts for class frequency and is more informative than accuracy on imbalanced datasets.
-
-### Key finding — counter-intuitive result
-
-VADER outperforms FinBERT on this evaluation — the opposite of the original hypothesis. Root causes:
-1. FinBERT was pre-trained on financial NEWS (investor sentiment), not consumer complaint language
-2. Ground truth labels partially reflect resolution outcome rather than pure text sentiment
-3. Both models operate near random-chance (33%) baseline — domain fine-tuning is required for production use
-
-See `notebooks/02_sentiment_pipeline.ipynb` Section 6 for full error analysis.
+**Label encoding:** LOW=0, MEDIUM=1, HIGH=2
 
 ---
 
-## 6. Known Limitations
+## 6. Evaluation Metrics
 
-### FinBERT limitations
-- Pre-trained on **institutional financial text** (news, earnings calls), not on **retail consumer complaints**. There is a subdomain shift even within finance.
-- **Formal sarcasm** ("They were extremely helpful — if your definition of helpful includes charging you twice") is not reliably detected.
-- **Long complaints** (>512 tokens) are truncated from the right, potentially losing resolution information that appears at the end of the text.
-- Labels in Financial PhraseBank reflect *investor sentiment*, not *customer satisfaction*. Transfer to consumer complaints is an approximation.
+*(Populated after running notebook 02)*
 
-### VADER limitations
-- Lexicon tuned on social media — does not understand domain-specific negation patterns in formal banking language (e.g., "the account was not disputed" scored as ambiguous).
-- No understanding of context or word order beyond simple negation modifiers.
+| Model | Accuracy | F1-weighted | Notes |
+|-------|----------|-------------|-------|
+| Logistic Regression | *(run nb02)* | *(run nb02)* | Baseline |
+| XGBoost (tuned) | *(run nb02)* | *(run nb02)* | Production |
 
-### NPS limitations
-- **NPS scores in this project are simulated**, not measured. They are derived from CFPB resolution metadata (response timeliness + resolution outcome) as a proxy for customer satisfaction.
-- Simulation is documented in `src/nps_calculator.py` and disclosed in the README under **Data Note**.
-- Gaussian noise (σ=1) is added for realism, but the simulation may not capture the full variance of real NPS distributions.
+**Primary metric:** F1-weighted — accounts for class imbalance.
 
-### Evaluation data limitations
-- 250 records is insufficient for statistical significance. Confidence intervals are wide.
-- Labels reflect a single annotator's judgement — no inter-annotator agreement was measured.
-- Sampling strategy (resolution-based pool selection) may introduce selection bias toward more extreme cases.
+**Business metric:** Detection rate of HIGH severity complaints in top-20% review
+(lift over random triage). See notebook 02 Section 7.
 
 ---
 
-## 7. Key Technical Decision: Why Not Train from Scratch on Twitter Data?
+## 7. Known Limitations
 
-This decision was evaluated and explicitly discarded for the following reasons:
+### Target variable is rule-based, not human-labeled
+The severity label is derived from CFPB structured fields using business rules —
+not from manual annotation. This means the model learns to reproduce a rule, not
+a ground truth. The value is in generalizing the pattern to cases where the rule
+logic might be ambiguous.
 
-| Factor | Twitter Airline Sentiment | CFPB Banking Complaints |
-|--------|--------------------------|------------------------|
-| **Language register** | Informal, abbreviated, emoji-heavy | Formal, detailed, narrative |
-| **Domain** | Aviation customer service | Banking / financial services |
-| **Text length** | 140–280 characters | Typically 200–800 words |
-| **Vocabulary** | Colloquial, slang | Legal and financial terminology |
-| **Annotation quality** | Crowdsourced | Domain expert (this project) |
+### NPS score dependency
+The NPS refinement step in `define_severity_label()` uses simulated NPS scores
+(not measured NPS). If NPS simulation logic changes, severity labels shift accordingly.
 
-Training on Twitter airline data and deploying on CFPB banking complaints would constitute a **domain mismatch** that would invalidate the evaluation. Using FinBERT's financial pre-training as the starting point is the methodologically correct choice.
+### CFPB-specific encoding
+`product_encoded` and `response_type_encoded` use hardcoded CFPB category mappings.
+The model will require re-encoding if applied to non-CFPB complaint systems.
 
-**Alternative considered:** Fine-tuning FinBERT on the 250 ground truth records. Discarded because 250 samples is too few for stable fine-tuning and would risk overfitting. Retained as a future enhancement once more annotated data is available.
+### complaint_length as a frustration proxy
+Word count is a crude signal. A short but profanity-laden complaint may be high severity;
+a long but polite complaint may be low. This is a known limitation accepted for simplicity.
+
+### Class imbalance
+Depending on the data distribution, MEDIUM may dominate. The Logistic Regression baseline
+uses `class_weight='balanced'`; XGBoost handles imbalance through its loss function and
+hyperparameter tuning. Verify distribution in notebook 02 Section 3.
 
 ---
 
 ## 8. Ethical Considerations
 
-- All data is sourced from official US government public records (CFPB). No private data is used.
-- No personally identifiable information (PII) is present — CFPB redacts names, account numbers, and addresses before publication.
-- The model is not used for automated decision-making affecting consumers. It is an analytics tool for CX teams.
-- NPS simulation is disclosed — results should not be reported as measured NPS without this caveat.
+- All data is from public US government sources (CFPB). No PII is present — CFPB redacts names, account numbers, and addresses.
+- The model is a triage tool for internal CX teams — not used for automated customer-facing decisions.
+- NPS simulation is documented — severity labels should not be presented as ground truth.
+- No demographic data is used as a feature — severity is based purely on complaint characteristics.
 
 ---
 
-## 9. Citation and Attribution
+## 9. Dataset Citation
 
 ```
-FinBERT:
-  Araci, D. (2019). FinBERT: Financial Sentiment Analysis with Pre-trained Language Models.
-  arXiv:1908.10063
-
-VADER:
-  Hutto, C.J. & Gilbert, E.E. (2014). VADER: A Parsimonious Rule-based Model for
-  Sentiment Analysis of Social Media Text. ICWSM.
-
-Dataset:
-  Consumer Financial Protection Bureau. CFPB Consumer Complaint Database.
-  https://www.consumerfinance.gov/data-research/consumer-complaints/
+Consumer Financial Protection Bureau (CFPB).
+US Consumer Complaint Database.
+https://www.consumerfinance.gov/data-research/consumer-complaints/
+Available on Kaggle: https://www.kaggle.com/datasets/cfpb/us-consumer-finance-complaints
 ```
 
 ---
