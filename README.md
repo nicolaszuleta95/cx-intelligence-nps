@@ -33,18 +33,6 @@ Reading complaints manually is impossible at scale. A team analyzing 10,000 mont
 
 ---
 
-## Why we moved away from sentiment classification
-
-Sentiment classification (positive/negative/neutral) was initially planned. After testing **6 models** — VADER, FinBERT, RoBERTa, Zero-Shot DeBERTa, and two DistilBERT fine-tuning stages — all performed near random chance (**33–41% accuracy**).
-
-**Root cause:** The CFPB dataset is 100% complaints by definition. Every record describes a problem — there is no positive/negative variation to learn, only urgency variation. The target was semantically invalid.
-
-Rather than forcing an ill-defined problem, we redefined the target: **complaint severity (LOW / MEDIUM / HIGH)** — a variable that exists naturally in the CFPB structured metadata and directly maps to CX operational priorities.
-
-> This demonstrates **senior critical thinking** — knowing when to reframe the problem, not just run more models.
-
----
-
 ## Results
 
 | Metric | Value |
