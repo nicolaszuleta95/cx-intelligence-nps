@@ -5,29 +5,6 @@
 
 ---
 
-## 0. Why This Model Exists — The Pivot Decision
-
-Sentiment classification (positive/negative/neutral) was the original approach.
-After testing **6 models**, all performed near random chance:
-
-| Model | Accuracy | F1-weighted | Verdict |
-|-------|----------|-------------|---------|
-| VADER | 38.0% | 0.338 | Near-random (33.3% baseline) |
-| FinBERT | 32.8% | 0.270 | Predicts zero positives |
-| RoBERTa Twitter | ~35% | ~0.31 | Domain mismatch |
-| Zero-Shot DeBERTa | ~37% | ~0.33 | No signal |
-| DistilBERT fine-tuned v1 | ~39% | ~0.31 | Collapses to negative |
-| DistilBERT fine-tuned v2 | ~41% | ~0.34 | Marginal — not production-ready |
-
-**Root cause:** The CFPB dataset is 100% complaints by definition. Classifying
-positive/negative/neutral in a corpus where every record describes a problem has no
-semantic validity. All variation is in *urgency*, not *polarity*.
-
-**Decision:** Redefine the target as **complaint severity (LOW / MEDIUM / HIGH)** —
-a variable that exists naturally in CFPB structured metadata and directly maps to CX action priorities.
-
----
-
 ## 1. Intended Use
 
 **Primary use case:** Triaging incoming banking complaints by urgency to prioritize
