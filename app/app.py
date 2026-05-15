@@ -29,8 +29,8 @@ matplotlib.use("Agg")
 # ---------------------------------------------------------------------------
 
 ROOT = Path(__file__).resolve().parents[1]
-PROCESSED_PATH = ROOT / "data" / "processed" / "banking_complaints.csv"
-FEATURES_PATH = ROOT / "data" / "processed" / "features_nlp.csv"
+PROCESSED_PATH = ROOT / "data" / "app" / "app_complaints.csv"
+FEATURES_PATH = ROOT / "data" / "app" / "app_features.csv"
 LDA_MODEL_PATH = ROOT / "models" / "lda_model.pkl"
 KMEANS_MODEL_PATH = ROOT / "models" / "kmeans_model.joblib"
 SEVERITY_MODEL_PATH = ROOT / "models" / "severity_model.joblib"
@@ -174,8 +174,8 @@ data_loaded = not df_processed.empty
 
 if not data_loaded:
     st.warning(
-        "Processed data not found. Run the notebooks first to generate "
-        "`data/processed/banking_complaints.csv` and `data/processed/features_nlp.csv`."
+        "App data not found. Run `python scripts/export_app_data.py` from the repo root "
+        "after executing the notebooks to generate `data/app/app_complaints.csv` and `data/app/app_features.csv`."
     )
 
 # ============================================================
